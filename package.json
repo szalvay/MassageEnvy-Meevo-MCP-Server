@@ -1,0 +1,22 @@
+{
+  "name": "meevo-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Meevo report automation (Massage Envy payroll)",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "puppeteer": "^24.0.0",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.4",
+    "@types/node": "^22.15.3"
+  }
+}
