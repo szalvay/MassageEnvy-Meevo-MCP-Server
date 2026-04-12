@@ -243,4 +243,49 @@ export function registerReportTools(server: McpServer, client: MeevoClient) {
       });
     }
   );
+
+  server.tool(
+    "meevo_pull_mr100",
+    "Pull MR100 (Sales Summary) reports for all 5 clinics for the previous calendar month. Used for monthly close revenue recording. The date is auto-calculated: if you run this in May, it pulls April's data.",
+    {
+      as_of_date: z.string().optional().describe("Reference date (YYYY-MM-DD) to determine which month to pull. Defaults to today. The PREVIOUS month's data is pulled."),
+      output_dir: z.string().optional().describe("Output directory for downloaded files"),
+    },
+    async ({ as_of_date, output_dir }) => {
+      const refDate = as_of_date || new Date().toISOString().split("T")[0];
+      const { start, end } = getPreviousMonthRange(refDate);
+
+      const allResults: Array<{ clinic: string; name: string; status: string; file?: string; error?: string }> = [];
+
+      for (const code of Object.keys(CLINICS)) {
+        try {
+          if (!client.hasSession(code)) {
+            await client.login(code);
+          }
+
+          const clinicDir = output_dir || undefined;
+          const file = await client.downloadReport(code, "MR200", {
+            startDate: start,
+            endDate: end,
+            allEmployees: true,
+          }, clinicDir);
+
+          allResults.push({ clinic: code, name: CLINICS[code], status: "success", file });
+        } catch (e: any) {
+          allResults.push({ clinic: code, name: CLINICS[code], status: "failed", error: e.message });
+        }
+      }
+
+      const ok = allResults.filter((r) => r.file).length;
+      const fail = allResults.filter((r) => r.error).length;
+
+      return textResult({
+        status: "complete",
+        report: "MR100 (Sales Summary)",
+        month: `${start} to ${end}`,
+        summary: `${ok} clinics downloaded, ${fail} failed`,
+        results: allResults,
+      });
+    }
+  );
 }
