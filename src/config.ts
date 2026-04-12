@@ -3,14 +3,25 @@ export interface ReportDef {
   code: string;
   name: string;
   dateLogic: "payroll_period" | "per_week" | "prev_month";
+  categoryFilter?: "all_sp" | "fda_only" | "esty_only" | "fda_managers" | "none";
   buildParams: (opts: ReportParamOpts) => Record<string, unknown>;
 }
+
+// Category name patterns used to filter employees per report
+// These are matched case-insensitively against category names from Meevo
+export const CATEGORY_FILTERS: Record<string, string[]> = {
+  all_sp: ["massage therapist", "female therapist", "male therapist", "stretch", "esthetician", "lead esthetician", "lead therapist"],
+  fda_only: ["front desk associate", "super front desk", "front desk"],
+  esty_only: ["esthetician", "lead esthetician"],
+  fda_managers: ["front desk associate", "super front desk", "front desk", "manager", "business manager", "assistant manager"],
+};
 
 export interface ReportParamOpts {
   startDate: string; // ISO date
   endDate: string;   // ISO date
   employeeGUIDs?: string[];
   categoryGUIDs?: string[];
+  categoryFilter?: "all_sp" | "fda_only" | "esty_only" | "fda_managers" | "none";
   allEmployees?: boolean;
   payPeriodGUID?: string;
   payPeriodYear?: number;
@@ -70,6 +81,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "DE044",
     name: "Employee Commission Detail",
     dateLogic: "payroll_period",
+    categoryFilter: "all_sp",
     buildParams: (opts) => ({
       ...payrollPeriodParams(opts),
       DisplayBreakdownsDE040: false,
@@ -86,6 +98,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "DE040",
     name: "Employee Compensation Report",
     dateLogic: "payroll_period",
+    // categoryFilter set dynamically: "all_sp" for DE040_SP, "fda_only" for DE040_FDA
     buildParams: (opts) => ({
       ...payrollPeriodParams(opts),
       DisplayBreakdownsDE040: false,
@@ -102,6 +115,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MES01",
     name: "Employee Schedule Summary",
     dateLogic: "per_week",
+    categoryFilter: "fda_only",
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",
@@ -123,6 +137,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MES10",
     name: "Employee Time Detail",
     dateLogic: "payroll_period",
+    categoryFilter: "all_sp",
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",
@@ -140,6 +155,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MA060",
     name: "Esthetician Add-On Detail",
     dateLogic: "payroll_period",
+    categoryFilter: "esty_only",
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",
@@ -160,6 +176,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "AQ246",
     name: "Enhancement Detail",
     dateLogic: "payroll_period",
+    categoryFilter: "none",
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",
@@ -174,6 +191,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MR245",
     name: "Membership Commission",
     dateLogic: "prev_month",
+    categoryFilter: "none",
     buildParams: (opts) => ({
       FieldOrderBy: "SoldBy",
       OpenCloseHistoryStartDate: isoDate(opts.startDate),
@@ -194,6 +212,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MR200",
     name: "Sales Summary",
     dateLogic: "prev_month",
+    // categoryFilter set dynamically: "fda_managers" for MR200_FDA, "esty_only" for MR200_Product
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",

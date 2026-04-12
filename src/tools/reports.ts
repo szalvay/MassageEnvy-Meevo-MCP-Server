@@ -57,17 +57,42 @@ export function registerReportTools(server: McpServer, client: MeevoClient) {
         const clinicDir = `${output_dir}/${clinic} - Meevo Reports`;
         const results: Array<{ report: string; variant?: string; file?: string; error?: string }> = [];
 
-        // DE044, DE040_SP, DE040_FDA — MANUAL PULL (require specific employee category selection in Meevo UI)
-        results.push({ report: "DE044", error: "MANUAL PULL — requires pay period selection in Meevo UI" });
-        results.push({ report: "DE040", variant: "SP", error: "MANUAL PULL — requires SP category selection in Meevo UI" });
-        results.push({ report: "DE040", variant: "FDA", error: "MANUAL PULL — requires FDA category selection in Meevo UI" });
+        // 1. DE044 — All SPs
+        try {
+          const f = await client.downloadReport(clinic, "DE044", {
+            startDate: period_start, endDate: period_end, categoryFilter: "all_sp",
+          }, clinicDir);
+          results.push({ report: "DE044", file: f });
+        } catch (e: any) {
+          results.push({ report: "DE044", error: e.message });
+        }
 
-        // 4. MES01 — per week
+        // 2. DE040_SP — All SPs
+        try {
+          const f = await client.downloadReport(clinic, "DE040", {
+            startDate: period_start, endDate: period_end, categoryFilter: "all_sp",
+          }, clinicDir, "SP");
+          results.push({ report: "DE040", variant: "SP", file: f });
+        } catch (e: any) {
+          results.push({ report: "DE040", variant: "SP", error: e.message });
+        }
+
+        // 3. DE040_FDA — FDA only
+        try {
+          const f = await client.downloadReport(clinic, "DE040", {
+            startDate: period_start, endDate: period_end, categoryFilter: "fda_only",
+          }, clinicDir, "FDA");
+          results.push({ report: "DE040", variant: "FDA", file: f });
+        } catch (e: any) {
+          results.push({ report: "DE040", variant: "FDA", error: e.message });
+        }
+
+        // 4. MES01 — FDA only, per week
         const weeks = getWeekBoundaries(period_start, period_end);
         for (const week of weeks) {
           try {
             const f = await client.downloadReport(clinic, "MES01", {
-              startDate: week.start, endDate: week.end, allEmployees: true,
+              startDate: week.start, endDate: week.end, categoryFilter: "fda_only",
             }, clinicDir, week.label.toLowerCase());
             results.push({ report: "MES01", variant: week.label, file: f });
           } catch (e: any) {
@@ -75,61 +100,61 @@ export function registerReportTools(server: McpServer, client: MeevoClient) {
           }
         }
 
-        // 5. MES10 — full pay period
+        // 5. MES10 — All SPs
         try {
           const f = await client.downloadReport(clinic, "MES10", {
-            startDate: period_start, endDate: period_end, allEmployees: true,
+            startDate: period_start, endDate: period_end, categoryFilter: "all_sp",
           }, clinicDir);
           results.push({ report: "MES10", file: f });
         } catch (e: any) {
           results.push({ report: "MES10", error: e.message });
         }
 
-        // 6. MA060 — full pay period
+        // 6. MA060 — Estheticians only
         try {
           const f = await client.downloadReport(clinic, "MA060", {
-            startDate: period_start, endDate: period_end, allEmployees: true,
+            startDate: period_start, endDate: period_end, categoryFilter: "esty_only",
           }, clinicDir);
           results.push({ report: "MA060", file: f });
         } catch (e: any) {
           results.push({ report: "MA060", error: e.message });
         }
 
-        // 7. AQ246 — full pay period
+        // 7. AQ246 — No filter (date range only)
         try {
           const f = await client.downloadReport(clinic, "AQ246", {
-            startDate: period_start, endDate: period_end,
+            startDate: period_start, endDate: period_end, categoryFilter: "none",
           }, clinicDir);
           results.push({ report: "AQ246", file: f });
         } catch (e: any) {
           results.push({ report: "AQ246", error: e.message });
         }
 
-        // 8. MR245 — previous full month
+        // 8. MR245 — No filter, previous full month
         const prevMonth = getPreviousMonthRange(period_start);
         try {
           const f = await client.downloadReport(clinic, "MR245", {
-            startDate: prevMonth.start, endDate: prevMonth.end,
+            startDate: prevMonth.start, endDate: prevMonth.end, categoryFilter: "none",
           }, clinicDir);
           results.push({ report: "MR245", file: f });
         } catch (e: any) {
           results.push({ report: "MR245", error: e.message });
         }
 
-        // 9. MR200 FDA (Gift Cards) — previous full month
+        // 9. MR200 FDA (Gift Cards) — FDA + Managers, previous full month
         try {
           const f = await client.downloadReport(clinic, "MR200", {
-            startDate: prevMonth.start, endDate: prevMonth.end, allEmployees: true,
+            startDate: prevMonth.start, endDate: prevMonth.end, categoryFilter: "fda_managers",
           }, clinicDir, "FDA");
           results.push({ report: "MR200", variant: "FDA", file: f });
         } catch (e: any) {
           results.push({ report: "MR200", variant: "FDA", error: e.message });
         }
 
-        // 10. MR200 Esty (Product/Retail) — previous full month
+        // 10. MR200 Product — Estheticians only, previous full month
         try {
           const f = await client.downloadReport(clinic, "MR200", {
-            startDate: prevMonth.start, endDate: prevMonth.end, allEmployees: true,
+            startDate: prevMonth.start, endDate: prevMonth.end, categoryFilter: "esty_only",
           }, clinicDir, "Product");
           results.push({ report: "MR200", variant: "Product", file: f });
         } catch (e: any) {

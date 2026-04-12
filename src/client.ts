@@ -1,7 +1,7 @@
 import puppeteer, { Browser, Page } from "puppeteer";
 import { mkdirSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
-import { MEEVO_APP_URL, MEEVO_REPORT_URL, REPORTS, type ReportParamOpts } from "./config.js";
+import { MEEVO_APP_URL, MEEVO_REPORT_URL, REPORTS, CATEGORY_FILTERS, type ReportParamOpts } from "./config.js";
 
 interface EmployeeCategory {
   id: string;
@@ -20,6 +20,7 @@ interface Session {
   payPeriodGUID: string;
   employeeGUIDs: string[];
   categoryGUIDs: string[];
+  categoryMap: Record<string, string>; // category name (lowercase) → GUID
   payPeriodYear: number;
   // Employee categories with their GUIDs for filtering
   spEmployeeIds: string[];   // Service providers (LMT, Esty, Stretch)
@@ -172,11 +173,16 @@ export class MeevoClient {
       payPeriodGUID: data.payPeriodGUID,
       employeeGUIDs: data.employeeGUIDs,
       categoryGUIDs: data.categoryGUIDs,
+      categoryMap: data.categoryMap,
       payPeriodYear: data.payPeriodYear,
       spEmployeeIds: [],
       fdaEmployeeIds: [],
       estyEmployeeIds: [],
     });
+
+    // Log discovered categories for debugging
+    const catNames = Object.keys(data.categoryMap);
+    console.error(`[meevo] ${clinic}: ${catNames.length} categories discovered: ${catNames.join(", ")}`);
 
     return data.sessionId;
   }
@@ -187,6 +193,7 @@ export class MeevoClient {
     payPeriodGUID: string;
     employeeGUIDs: string[];
     categoryGUIDs: string[];
+    categoryMap: Record<string, string>;
     payPeriodYear: number;
   }> {
     // Close the Smart Center overlay first
@@ -311,12 +318,47 @@ export class MeevoClient {
         }
 
         const rp = JSON.parse(paramsVal);
+
+        // Extract category name → GUID mapping from Angular model
+        const catMap: Record<string, string> = {};
+        try {
+          const cats = scope.reports.employeeCategories
+            || scope.reports.payPeriodEmployeeCategories
+            || scope.reports.EmployeeCategories
+            || [];
+          for (const cat of cats) {
+            const name = (cat.name || cat.displayName || cat.categoryName || "").toLowerCase().trim();
+            const id = cat.id || cat.guid || cat.employeeCategoryId || "";
+            if (name && id) catMap[name] = String(id);
+          }
+        } catch {}
+        // Also try the scope's model data directly
+        if (Object.keys(catMap).length === 0) {
+          try {
+            const model = scope.reports.model || scope.reports;
+            const catArrays = [
+              model.employeeCategories, model.payPeriodEmployeeCategories,
+              model.EmployeeCategoryList, model.PayPeriodEmployeeCategories,
+            ].filter(Boolean);
+            for (const arr of catArrays) {
+              if (!Array.isArray(arr)) continue;
+              for (const cat of arr) {
+                const name = (cat.name || cat.displayName || cat.categoryName || "").toLowerCase().trim();
+                const id = cat.id || cat.guid || cat.employeeCategoryId || "";
+                if (name && id) catMap[name] = String(id);
+              }
+              if (Object.keys(catMap).length > 0) break;
+            }
+          } catch {}
+        }
+
         return {
           source: "dry_run_submit",
           bearerToken: btVal,
           payPeriodGUID: rp.PayPeriodSelected_TBL || "",
           employeeGUIDs: rp.PayPeriodEmployees_TBL || rp.EmployeeList_TBL || rp.EmployeeCList_TBL || [],
           categoryGUIDs: rp.PayPeriodEmployeeCategories_TBL || rp.EmployeeCategoryList_TBL || [],
+          categoryMap: catMap,
           payPeriodYear: rp.PayPeriodYear || new Date().getFullYear(),
         };
       } catch (e: any) {
@@ -324,9 +366,12 @@ export class MeevoClient {
       }
     });
 
+    const catMap = formData?.categoryMap || {};
     console.error(`[meevo] Extraction: ${JSON.stringify({
       source: formData?.source, error: formData?.error,
       payPeriod: formData?.payPeriodGUID, employees: formData?.employeeGUIDs?.length,
+      categories: Object.keys(catMap).length,
+      categoryNames: Object.keys(catMap),
       bearer: formData?.bearerToken ? "yes" : "NO"
     })}`);
 
@@ -336,6 +381,7 @@ export class MeevoClient {
       payPeriodGUID: formData?.payPeriodGUID || "",
       employeeGUIDs: formData?.employeeGUIDs || [],
       categoryGUIDs: formData?.categoryGUIDs || [],
+      categoryMap: catMap,
       payPeriodYear: formData?.payPeriodYear || new Date().getFullYear(),
     };
   }
@@ -367,18 +413,33 @@ export class MeevoClient {
     }
 
     // All other reports: use direct HTTP POST (faster, no browser needed)
-    // Inject cached session data into params (employee GUIDs, pay period, etc.)
+    // Resolve category filter → specific category GUIDs for this report
+    const filterName = params.categoryFilter || report.categoryFilter;
+    let filteredCategoryGUIDs = params.categoryGUIDs || session.categoryGUIDs;
+
+    if (filterName && filterName !== "none" && CATEGORY_FILTERS[filterName] && Object.keys(session.categoryMap).length > 0) {
+      const patterns = CATEGORY_FILTERS[filterName];
+      filteredCategoryGUIDs = [];
+      for (const [catName, catGuid] of Object.entries(session.categoryMap)) {
+        if (patterns.some((p) => catName.includes(p.toLowerCase()))) {
+          filteredCategoryGUIDs.push(catGuid);
+        }
+      }
+      console.error(`[meevo] Report ${reportCode}: filter=${filterName} → ${filteredCategoryGUIDs.length} categories (${patterns.join(", ")})`);
+    }
+
     const enrichedParams: ReportParamOpts = {
       ...params,
       employeeGUIDs: params.employeeGUIDs || session.employeeGUIDs,
-      categoryGUIDs: params.categoryGUIDs || session.categoryGUIDs,
+      categoryGUIDs: filteredCategoryGUIDs,
       payPeriodGUID: params.payPeriodGUID || session.payPeriodGUID,
       payPeriodYear: params.payPeriodYear || session.payPeriodYear,
+      allEmployees: filterName === "none" ? undefined : params.allEmployees,
     };
 
     // Build report params
     const reportParams = report.buildParams(enrichedParams);
-    console.error(`[meevo] Report ${reportCode}: payPeriodGUID=${enrichedParams.payPeriodGUID}, employees=${enrichedParams.employeeGUIDs?.length}, categories=${enrichedParams.categoryGUIDs?.length}`);
+    console.error(`[meevo] Report ${reportCode}: payPeriodGUID=${enrichedParams.payPeriodGUID}, employees=${enrichedParams.employeeGUIDs?.length}, categories=${filteredCategoryGUIDs.length}`);
 
     // Get cookies from browser session for direct HTTP request
     const cookies = await session.page.cookies();
