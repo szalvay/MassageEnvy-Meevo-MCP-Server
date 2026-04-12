@@ -1,4 +1,8 @@
 node_modules/
 dist/
 .env
+downloads/
+portal-downloads/
 *.xlsx
+*.png
+*.XLSX

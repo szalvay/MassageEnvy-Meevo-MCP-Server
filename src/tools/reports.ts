@@ -57,28 +57,10 @@ export function registerReportTools(server: McpServer, client: MeevoClient) {
         const clinicDir = `${output_dir}/${clinic} - Meevo Reports`;
         const results: Array<{ report: string; variant?: string; file?: string; error?: string }> = [];
 
-        // DE044 — SKIPPED (requires pay period GUID from Angular form)
-        results.push({ report: "DE044", error: "MANUAL PULL REQUIRED — download from Meevo UI" });
-
-        // DE040 SP — payroll period (works with allEmployees)
-        try {
-          const f = await client.downloadReport(clinic, "DE040", {
-            startDate: period_start, endDate: period_end, allEmployees: true,
-          }, clinicDir, "SP");
-          results.push({ report: "DE040", variant: "SP", file: f });
-        } catch (e: any) {
-          results.push({ report: "DE040", variant: "SP", error: e.message });
-        }
-
-        // DE040 FDA
-        try {
-          const f = await client.downloadReport(clinic, "DE040", {
-            startDate: period_start, endDate: period_end, allEmployees: true,
-          }, clinicDir, "FDA");
-          results.push({ report: "DE040", variant: "FDA", file: f });
-        } catch (e: any) {
-          results.push({ report: "DE040", variant: "FDA", error: e.message });
-        }
+        // DE044, DE040_SP, DE040_FDA — MANUAL PULL (require specific employee category selection in Meevo UI)
+        results.push({ report: "DE044", error: "MANUAL PULL — requires pay period selection in Meevo UI" });
+        results.push({ report: "DE040", variant: "SP", error: "MANUAL PULL — requires SP category selection in Meevo UI" });
+        results.push({ report: "DE040", variant: "FDA", error: "MANUAL PULL — requires FDA category selection in Meevo UI" });
 
         // 4. MES01 — per week
         const weeks = getWeekBoundaries(period_start, period_end);

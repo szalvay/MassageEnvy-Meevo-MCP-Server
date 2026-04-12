@@ -3,6 +3,12 @@ import { mkdirSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { MEEVO_APP_URL, MEEVO_REPORT_URL, REPORTS, type ReportParamOpts } from "./config.js";
 
+interface EmployeeCategory {
+  id: string;
+  name: string;
+  employeeIds: string[];
+}
+
 interface Session {
   browser: Browser;
   page: Page;
@@ -15,6 +21,10 @@ interface Session {
   employeeGUIDs: string[];
   categoryGUIDs: string[];
   payPeriodYear: number;
+  // Employee categories with their GUIDs for filtering
+  spEmployeeIds: string[];   // Service providers (LMT, Esty, Stretch)
+  fdaEmployeeIds: string[];  // Front desk associates
+  estyEmployeeIds: string[]; // Estheticians only
 }
 
 export class MeevoClient {
@@ -163,6 +173,9 @@ export class MeevoClient {
       employeeGUIDs: data.employeeGUIDs,
       categoryGUIDs: data.categoryGUIDs,
       payPeriodYear: data.payPeriodYear,
+      spEmployeeIds: [],
+      fdaEmployeeIds: [],
+      estyEmployeeIds: [],
     });
 
     return data.sessionId;
@@ -604,5 +617,126 @@ export class MeevoClient {
 
   hasSession(clinic: string): boolean {
     return this.sessions.has(clinic);
+  }
+
+  // Extract employee categories and their employee GUIDs from a clinic
+  // Uses Meevo's internal API via fetch from within the authenticated page context
+  async getEmployeeCategories(clinic: string): Promise<Array<{ name: string; id: string; employeeGuids: string[] }>> {
+    let session = this.sessions.get(clinic);
+    if (!session) {
+      await this.login(clinic);
+      session = this.sessions.get(clinic)!;
+    }
+
+    const page = session.page;
+
+    // Try multiple Meevo API endpoints to find employee categories
+    const result = await page.evaluate(async () => {
+      const endpoints = [
+        "/api/Employee/Category/List",
+        "/api/EmployeeCategory/List",
+        "/api/Employee/Categories",
+        "/api/employees/categories",
+        "/api/Report/EmployeeCategories",
+        "/api/Employee/Category",
+        "/api/payroll/employeecategories",
+        "/api/Report/PayPeriod/EmployeeCategories",
+        "/api/EmployeeCategories",
+      ];
+
+      for (const ep of endpoints) {
+        try {
+          const r = await fetch("https://me.meevo.com" + ep, {
+            method: "GET",
+            credentials: "include",
+            headers: { "Accept": "application/json" },
+          });
+          if (r.ok) {
+            const data = await r.json();
+            return { endpoint: ep, data };
+          }
+          // Also try POST
+          const r2 = await fetch("https://me.meevo.com" + ep, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Accept": "application/json", "Content-Type": "application/json" },
+            body: "{}",
+          });
+          if (r2.ok) {
+            const data = await r2.json();
+            return { endpoint: ep + " (POST)", data };
+          }
+        } catch {}
+      }
+      return { endpoint: "none found", data: null };
+    });
+
+    console.error(`[meevo] Category API result: endpoint=${result.endpoint}, hasData=${!!result.data}`);
+
+    if (result.data) {
+      // Parse the API response into our format
+      const categories: Array<{ name: string; id: string; employeeGuids: string[] }> = [];
+      const data = result.data;
+
+      // Handle various response formats
+      const items = Array.isArray(data) ? data : data.items || data.categories || data.result || [];
+      for (const item of items) {
+        categories.push({
+          name: item.name || item.displayName || item.categoryName || "",
+          id: item.id || item.guid || item.employeeCategoryId || "",
+          employeeGuids: item.employees?.map((e: any) => e.id || e.guid || e.employeeId) || [],
+        });
+      }
+
+      return categories;
+    }
+
+    // Fallback: try to read from the Angular scope on the current page
+    const scopeData = await page.evaluate(() => {
+      const ang = (window as any).angular;
+      if (!ang) return null;
+
+      // Walk all scopes looking for employee category data
+      const results: any[] = [];
+      const visited = new Set();
+
+      function walkScope(s: any) {
+        if (!s || visited.has(s.$id)) return;
+        visited.add(s.$id);
+
+        const keys = Object.keys(s).filter(k => !k.startsWith("$") && !k.startsWith("_"));
+        for (const k of keys) {
+          const v = s[k];
+          if (Array.isArray(v) && v.length > 0 && v[0]?.employeeCategoryId) {
+            results.push({ key: k, items: v.map((i: any) => ({ id: i.employeeCategoryId || i.id, name: i.name || i.displayName, empCount: i.employees?.length || 0 })) });
+          }
+          if (Array.isArray(v) && v.length > 0 && v[0]?.categoryName) {
+            results.push({ key: k, items: v.map((i: any) => ({ id: i.id || i.guid, name: i.categoryName || i.name, empCount: i.employees?.length || 0 })) });
+          }
+        }
+
+        // Check children
+        let child = s.$$childHead;
+        while (child) {
+          walkScope(child);
+          child = child.$$nextSibling;
+        }
+      }
+
+      const rootScope = ang.element(document.body).scope()?.$root;
+      if (rootScope) walkScope(rootScope);
+      return results;
+    });
+
+    if (scopeData && scopeData.length > 0) {
+      console.error(`[meevo] Found categories via scope walk: ${JSON.stringify(scopeData[0].items.map((i: any) => i.name))}`);
+      return scopeData[0].items.map((i: any) => ({
+        name: i.name,
+        id: String(i.id),
+        employeeGuids: [],
+      }));
+    }
+
+    throw new Error("Could not find employee categories via API or Angular scope");
   }
 }

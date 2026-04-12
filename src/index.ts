@@ -1,8 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { MeevoClient } from "./client.js";
+import { PortalClient } from "./portal-client.js";
 import { registerSessionTools } from "./tools/session.js";
 import { registerReportTools } from "./tools/reports.js";
+import { registerPortalTools } from "./tools/portal.js";
 
 import { readFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
@@ -26,6 +28,7 @@ if (existsSync(envPath)) {
 }
 
 const client = new MeevoClient();
+const portalClient = new PortalClient();
 
 const server = new McpServer({
   name: "meevo",
@@ -34,6 +37,7 @@ const server = new McpServer({
 
 registerSessionTools(server, client);
 registerReportTools(server, client);
+registerPortalTools(server, portalClient);
 
 // Cleanup on exit
 process.on("SIGINT", async () => {

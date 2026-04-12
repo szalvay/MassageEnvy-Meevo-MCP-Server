@@ -61,4 +61,25 @@ export function registerSessionTools(server: McpServer, client: MeevoClient) {
       }
     }
   );
+
+  server.tool(
+    "meevo_get_employee_categories",
+    "Extract employee categories and their employee GUIDs from a clinic. Run this once to discover the category-to-employee mapping, then save the results for future report filtering.",
+    {
+      clinic: z.enum(["0014", "0355", "0360", "0367", "0661"]).describe("Clinic code"),
+    },
+    async ({ clinic }) => {
+      try {
+        const categories = await client.getEmployeeCategories(clinic);
+        return textResult({
+          clinic,
+          name: CLINICS[clinic],
+          categories,
+          totalCategories: categories.length,
+        });
+      } catch (e: any) {
+        return errorResult(`Failed to extract categories for ${clinic}: ${e.message}`);
+      }
+    }
+  );
 }
