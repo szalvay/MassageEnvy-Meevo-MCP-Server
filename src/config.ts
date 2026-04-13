@@ -144,7 +144,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MES01",
     name: "Employee Schedule Summary",
     dateLogic: "per_week",
-    categoryFilter: "fda_managers",
+    categoryFilter: "fda_only",
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",

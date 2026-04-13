@@ -178,8 +178,78 @@ export class MeevoClient {
       estyEmployeeIds: [],
     });
 
-    // Category filtering now uses hardcoded GUIDs in config.ts (extracted from Meevo UI)
-    // No dynamic extraction needed
+    // Try to get cross-clinic employees by accessing the report iframe directly
+    // Puppeteer's page.frames() can access iframe content that page.evaluate() cannot
+    try {
+      const page = this.sessions.get(clinic)!.page;
+
+      // Navigate to MES01 which has the employee category toggles
+      await page.evaluate(() => {
+        const input = document.querySelector('input[placeholder*="Tell Meevo"]') as HTMLInputElement;
+        if (input) { input.focus(); input.click(); input.select(); }
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      await page.keyboard.down("Control");
+      await page.keyboard.press("a");
+      await page.keyboard.up("Control");
+      await page.keyboard.type("MES01", { delay: 30 });
+      await page.keyboard.press("Enter");
+      await new Promise((r) => setTimeout(r, 8000));
+
+      // Check all frames for the report form
+      const frames = page.frames();
+      console.error(`[meevo] ${clinic}: Found ${frames.length} frames`);
+
+      for (const frame of frames) {
+        try {
+          const url = frame.url();
+          console.error(`[meevo] ${clinic}: Frame: ${url.substring(0, 80)}`);
+
+          // Look for Angular + form in this frame
+          const frameData = await frame.evaluate(() => {
+            const ang = (window as any).angular;
+            if (!ang) return null;
+            const formEl = document.querySelector('form[action*="LoadReport"]');
+            if (!formEl) return null;
+            const scope = ang.element(formEl).scope();
+            if (!scope?.reports) return null;
+
+            // Count all text elements that look like category names
+            const catTexts: string[] = [];
+            document.querySelectorAll("*").forEach((el: any) => {
+              if (el.children.length === 0) {
+                const t = (el.textContent || "").trim();
+                if (/^(Assistant|Esthetician|Female|Franchise|Front|Lead|Male|Manager|Massage|Regional|Stretch|Super)/.test(t) && t.length < 60) {
+                  catTexts.push(t);
+                }
+              }
+            });
+
+            // Read the current employee list from the model
+            const model = scope.reports.context?.reportModel || {};
+            const empGUIDs = model.EmployeeCList_TBL || model.EmployeeList_TBL || [];
+            const catGUIDs = model.EmployeeCategoryList_TBL || [];
+
+            return {
+              hasForm: true,
+              empCount: empGUIDs.length,
+              catCount: catGUIDs.length,
+              catTexts,
+              frameUrl: window.location.href,
+            };
+          }).catch(() => null);
+
+          if (frameData) {
+            console.error(`[meevo] ${clinic}: Frame data: ${JSON.stringify(frameData)}`);
+          }
+        } catch {}
+      }
+
+      // Save debug screenshot
+      await page.screenshot({ path: join(downloadDir, "debug_05_mes01_frames.png") });
+    } catch (e: any) {
+      console.error(`[meevo] ${clinic}: Frame inspection failed: ${e.message}`);
+    }
 
     return data.sessionId;
   }
@@ -367,28 +437,19 @@ export class MeevoClient {
 
     // Apply category filter using hardcoded GUIDs from config
     const filterName = params.categoryFilter || report.categoryFilter;
-    let filteredCategoryGUIDs = params.categoryGUIDs || session.categoryGUIDs;
 
-    if (filterName && filterName !== "none" && CATEGORY_FILTERS[filterName]) {
-      filteredCategoryGUIDs = CATEGORY_FILTERS[filterName];
-      console.error(`[meevo] Report ${reportCode}: filter=${filterName} → ${filteredCategoryGUIDs.length} category GUIDs`);
-    }
-
-    // Direct HTTP POST with filtered category GUIDs
-    // When category filtering is active, clear employeeGUIDs and set allEmployees=true
-    // so Meevo includes cross-clinic staff filtered by category only
-    const usesCategoryFilter = filterName && filterName !== "none";
+    // Pull all employees — Bible handles role-based filtering downstream via BHR data
     const enrichedParams: ReportParamOpts = {
       ...params,
-      employeeGUIDs: usesCategoryFilter ? [] : (params.employeeGUIDs || session.employeeGUIDs),
-      categoryGUIDs: filteredCategoryGUIDs,
-      allEmployees: usesCategoryFilter ? true : params.allEmployees,
+      employeeGUIDs: params.employeeGUIDs || session.employeeGUIDs,
+      categoryGUIDs: params.categoryGUIDs || session.categoryGUIDs,
+      allEmployees: true,
       payPeriodGUID: params.payPeriodGUID || session.payPeriodGUID,
       payPeriodYear: params.payPeriodYear || session.payPeriodYear,
     };
 
     const reportParams = report.buildParams(enrichedParams);
-    console.error(`[meevo] Report ${reportCode}: HTTP POST, categories=${filteredCategoryGUIDs.length}`);
+    console.error(`[meevo] Report ${reportCode}: HTTP POST, allEmployees=true`);
 
     const cookies = await session.page.cookies();
     const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
@@ -418,21 +479,16 @@ export class MeevoClient {
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
-
     const firstBytes = buffer.slice(0, 10).toString("utf-8");
     if (firstBytes.startsWith("{") || firstBytes.startsWith("<")) {
-      const errorText = buffer.toString("utf-8").substring(0, 500);
-      throw new Error(`Meevo returned error instead of XLSX: ${errorText}`);
+      throw new Error(`Meevo returned error instead of XLSX: ${buffer.toString("utf-8").substring(0, 500)}`);
     }
 
     const suffix = variant ? `_${variant}` : "";
     const filename = `${clinic}_${report.code}${suffix}.XLSX`;
-
     const filePath = join(targetDir, filename);
     writeFileSync(filePath, buffer);
-
     session.lastActive = Date.now();
-
     return filePath;
   }
 
@@ -479,94 +535,8 @@ export class MeevoClient {
       if (formatField) formatField.value = "XLSX";
     });
 
-    // Select employee categories by clicking toggles in the UI
-    if (categoryFilter && categoryFilter !== "none" && CATEGORY_FILTERS[categoryFilter]) {
-      const wantedCategories = CATEGORY_FILTERS[categoryFilter];
-      console.error(`[meevo] ${reportCode}: selecting categories: ${wantedCategories.join(", ")}`);
-
-      await page.evaluate((wanted) => {
-        // First, uncheck "All Employees" if it's checked
-        const allEmpToggle = Array.from(document.querySelectorAll("span, label, div")).find(
-          (el) => el.textContent?.trim() === "All Employees"
-        );
-        if (allEmpToggle) {
-          // Find the closest toggle/checkbox and uncheck it
-          const toggle = allEmpToggle.closest("[ng-click], [ng-change]") || allEmpToggle;
-          (toggle as HTMLElement).click();
-        }
-
-        // Wait a tick for Angular to update
-      }, wantedCategories);
-
-      await new Promise((r) => setTimeout(r, 1000));
-
-      // Now uncheck all categories first, then check only the wanted ones
-      await page.evaluate((wanted) => {
-        // Find all category toggle elements
-        // Each category row has text like "Front Desk Associate (11)" with a toggle
-        const allToggles = Array.from(document.querySelectorAll('[ng-repeat*="ategory"], [ng-repeat*="employee"]'));
-
-        // If ng-repeat elements found, use them
-        if (allToggles.length > 0) {
-          for (const el of allToggles) {
-            const text = (el.textContent || "").toLowerCase().trim();
-            const isWanted = wanted.some((w: string) => text.includes(w.toLowerCase()));
-            const toggle = el.querySelector('[ng-click], [type="checkbox"], .toggle, .md-thumb') || el;
-
-            // Determine if currently selected (look for active/checked state)
-            const isActive = el.classList.contains("active") || el.classList.contains("selected")
-              || el.querySelector(".md-checked, .active, :checked") !== null
-              || (el.querySelector('[aria-checked]') as HTMLElement)?.getAttribute("aria-checked") === "true";
-
-            if (isWanted && !isActive) {
-              (toggle as HTMLElement).click();
-            } else if (!isWanted && isActive) {
-              (toggle as HTMLElement).click();
-            }
-          }
-        } else {
-          // Fallback: find category items by text content in the Employee section
-          const employeeSection = Array.from(document.querySelectorAll("h4, h5, label, span")).find(
-            (el) => el.textContent?.trim() === "Employee"
-          )?.closest("div, section, fieldset");
-
-          const container = employeeSection || document.body;
-          const items = Array.from(container.querySelectorAll("div, li, label, span"))
-            .filter((el) => {
-              const t = (el.textContent || "").trim();
-              // Match category names like "Front Desk Associate (11)" or "Esthetician (4)"
-              return /^[A-Z][\w\s.-]+\(\d+\)$/.test(t) || /^[A-Z][\w\s.-]+$/.test(t);
-            });
-
-          for (const item of items) {
-            const text = (item.textContent || "").toLowerCase().trim();
-            const isWanted = wanted.some((w: string) => text.includes(w.toLowerCase()));
-
-            // Click to toggle
-            const clickTarget = item.querySelector("[ng-click], .toggle") || item;
-            const isActive = item.classList.contains("active")
-              || item.closest(".active, .selected, .md-checked") !== null;
-
-            if (isWanted && !isActive) {
-              (clickTarget as HTMLElement).click();
-            } else if (!isWanted && isActive) {
-              (clickTarget as HTMLElement).click();
-            }
-          }
-        }
-      }, wantedCategories);
-
-      await new Promise((r) => setTimeout(r, 2000));
-
-      // Log how many employees are now selected
-      const empCount = await page.evaluate(() => {
-        const countEl = Array.from(document.querySelectorAll("span, div, p")).find(
-          (el) => el.textContent?.includes("Total Employees Selected")
-        );
-        return countEl?.textContent?.trim() || "unknown";
-      });
-      console.error(`[meevo] ${reportCode}: after category selection: ${empCount}`);
-    }
+    // Category filtering is applied AFTER form capture by modifying reportParams JSON
+    // No UI interaction needed — "All Employees" stays checked (includes cross-clinic staff)
 
     // Install interceptors for BOTH submit paths:
     // 1. submit EVENT (fired by button click) — catches native form submission
@@ -632,7 +602,24 @@ export class MeevoClient {
 
     console.error(`[meevo] Captured ${reportCode} form! reportParams length=${captured.reportParams.length}, bearerToken=${captured.bearerToken ? 'yes' : 'no'}`);
 
-    // Now use our direct HTTP POST with the captured params
+    // Apply category filter by modifying the captured reportParams
+    if (categoryFilter && categoryFilter !== "none" && CATEGORY_FILTERS[categoryFilter]) {
+      try {
+        const rp = JSON.parse(captured.reportParams);
+        const filteredGUIDs = CATEGORY_FILTERS[categoryFilter];
+        // Replace category GUIDs
+        if (rp.EmployeeCategoryList_TBL !== undefined) rp.EmployeeCategoryList_TBL = filteredGUIDs;
+        if (rp.PayPeriodEmployeeCategories_TBL !== undefined) rp.PayPeriodEmployeeCategories_TBL = filteredGUIDs;
+        // CRITICAL: set isAllEmployeeSelected to false so the server respects the category filter
+        rp.isAllEmployeeSelected = false;
+        captured.reportParams = JSON.stringify(rp);
+        console.error(`[meevo] ${reportCode}: applied category filter=${categoryFilter} (${filteredGUIDs.length} GUIDs), isAllEmployeeSelected=false`);
+      } catch (e: any) {
+        console.error(`[meevo] ${reportCode}: failed to apply category filter: ${e.message}`);
+      }
+    }
+
+    // Now use our direct HTTP POST with the (potentially modified) captured params
     const cookies = await page.cookies();
     const cookieHeader = cookies.map((c: any) => `${c.name}=${c.value}`).join("; ");
 
