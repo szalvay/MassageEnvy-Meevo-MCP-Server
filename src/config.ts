@@ -7,13 +7,42 @@ export interface ReportDef {
   buildParams: (opts: ReportParamOpts) => Record<string, unknown>;
 }
 
-// Category name patterns used to filter employees per report
-// These are matched case-insensitively against category names from Meevo
+// Employee category GUIDs extracted from Meevo Angular UI (clinic 0014)
+// These are the same across all clinics (franchise-wide category definitions)
+const FDA_GUIDS = [
+  "845ec091-03eb-4192-a1fe-a7040162dfbb",  // Front Desk Associate
+  "9df7c93f-d6c5-4f1c-9df5-a704016301a9",  // Super Front Desk Assoc.
+];
+const ESTY_GUIDS = [
+  "e332b9a0-2659-4336-9379-a7040162f0a2",  // Esthetician
+];
+const MANAGER_GUIDS = [
+  "f059abe5-102b-4140-9dfe-a7040163b183",  // Manager / Assistant Manager
+  "3cfc5e03-b388-4901-b301-a70401643eb8",  // Super Manager
+];
+const ALL_GUIDS = [
+  "845ec091-03eb-4192-a1fe-a7040162dfbb",  // Front Desk Associate
+  "315049d3-6ba7-4365-9031-a7be0172b04e",  // Franchise Owner
+  "e332b9a0-2659-4336-9379-a7040162f0a2",  // Esthetician
+  "13a5c664-da92-466f-97c8-a70401631570",  // Female Therapist
+  "15617dd8-fa4d-4df9-ac6e-a70401637ba9",  // Massage Therapist
+  "9df7c93f-d6c5-4f1c-9df5-a704016301a9",  // Super Front Desk Assoc.
+  "56476f8c-4941-4cc3-bbef-a70401639cf3",  // Male Therapist
+  "3171a733-6dfe-4daa-ac09-a7040163c497",  // Stretch Therapist
+  "f059abe5-102b-4140-9dfe-a7040163b183",  // Manager / Assistant Manager
+  "793df75f-8f19-4e35-88a6-a7040163e018",  // Assistant Manager
+  "21892439-675b-4bc2-ab63-a7be017303c4",  // (unknown - possibly Lead Therapist)
+  "3cfc5e03-b388-4901-b301-a70401643eb8",  // Super Manager
+];
+// All SPs = All GUIDs minus FDA GUIDs
+const SP_GUIDS = ALL_GUIDS.filter(g => !FDA_GUIDS.includes(g));
+
+// Category filter → GUID arrays for report filtering
 export const CATEGORY_FILTERS: Record<string, string[]> = {
-  all_sp: ["massage therapist", "female therapist", "male therapist", "stretch", "esthetician", "lead esthetician", "lead therapist"],
-  fda_only: ["front desk associate", "super front desk", "front desk"],
-  esty_only: ["esthetician", "lead esthetician"],
-  fda_managers: ["front desk associate", "super front desk", "front desk", "manager", "business manager", "assistant manager"],
+  all_sp: SP_GUIDS,
+  fda_only: FDA_GUIDS,
+  esty_only: ESTY_GUIDS,
+  fda_managers: [...FDA_GUIDS, ...MANAGER_GUIDS],
 };
 
 export interface ReportParamOpts {
@@ -115,7 +144,7 @@ export const REPORTS: Record<string, ReportDef> = {
     code: "MES01",
     name: "Employee Schedule Summary",
     dateLogic: "per_week",
-    categoryFilter: "fda_only",
+    categoryFilter: "fda_managers",
     buildParams: (opts) => ({
       ...baseParams(opts),
       timeZoneOffset: "-07:00:00",

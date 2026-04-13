@@ -20,7 +20,6 @@ interface Session {
   payPeriodGUID: string;
   employeeGUIDs: string[];
   categoryGUIDs: string[];
-  categoryMap: Record<string, string>; // category name (lowercase) → GUID
   payPeriodYear: number;
   // Employee categories with their GUIDs for filtering
   spEmployeeIds: string[];   // Service providers (LMT, Esty, Stretch)
@@ -173,16 +172,14 @@ export class MeevoClient {
       payPeriodGUID: data.payPeriodGUID,
       employeeGUIDs: data.employeeGUIDs,
       categoryGUIDs: data.categoryGUIDs,
-      categoryMap: data.categoryMap,
       payPeriodYear: data.payPeriodYear,
       spEmployeeIds: [],
       fdaEmployeeIds: [],
       estyEmployeeIds: [],
     });
 
-    // Log discovered categories for debugging
-    const catNames = Object.keys(data.categoryMap);
-    console.error(`[meevo] ${clinic}: ${catNames.length} categories discovered: ${catNames.join(", ")}`);
+    // Category filtering now uses hardcoded GUIDs in config.ts (extracted from Meevo UI)
+    // No dynamic extraction needed
 
     return data.sessionId;
   }
@@ -193,7 +190,6 @@ export class MeevoClient {
     payPeriodGUID: string;
     employeeGUIDs: string[];
     categoryGUIDs: string[];
-    categoryMap: Record<string, string>;
     payPeriodYear: number;
   }> {
     // Close the Smart Center overlay first
@@ -319,46 +315,12 @@ export class MeevoClient {
 
         const rp = JSON.parse(paramsVal);
 
-        // Extract category name → GUID mapping from Angular model
-        const catMap: Record<string, string> = {};
-        try {
-          const cats = scope.reports.employeeCategories
-            || scope.reports.payPeriodEmployeeCategories
-            || scope.reports.EmployeeCategories
-            || [];
-          for (const cat of cats) {
-            const name = (cat.name || cat.displayName || cat.categoryName || "").toLowerCase().trim();
-            const id = cat.id || cat.guid || cat.employeeCategoryId || "";
-            if (name && id) catMap[name] = String(id);
-          }
-        } catch {}
-        // Also try the scope's model data directly
-        if (Object.keys(catMap).length === 0) {
-          try {
-            const model = scope.reports.model || scope.reports;
-            const catArrays = [
-              model.employeeCategories, model.payPeriodEmployeeCategories,
-              model.EmployeeCategoryList, model.PayPeriodEmployeeCategories,
-            ].filter(Boolean);
-            for (const arr of catArrays) {
-              if (!Array.isArray(arr)) continue;
-              for (const cat of arr) {
-                const name = (cat.name || cat.displayName || cat.categoryName || "").toLowerCase().trim();
-                const id = cat.id || cat.guid || cat.employeeCategoryId || "";
-                if (name && id) catMap[name] = String(id);
-              }
-              if (Object.keys(catMap).length > 0) break;
-            }
-          } catch {}
-        }
-
         return {
           source: "dry_run_submit",
           bearerToken: btVal,
           payPeriodGUID: rp.PayPeriodSelected_TBL || "",
           employeeGUIDs: rp.PayPeriodEmployees_TBL || rp.EmployeeList_TBL || rp.EmployeeCList_TBL || [],
           categoryGUIDs: rp.PayPeriodEmployeeCategories_TBL || rp.EmployeeCategoryList_TBL || [],
-          categoryMap: catMap,
           payPeriodYear: rp.PayPeriodYear || new Date().getFullYear(),
         };
       } catch (e: any) {
@@ -366,12 +328,9 @@ export class MeevoClient {
       }
     });
 
-    const catMap = formData?.categoryMap || {};
     console.error(`[meevo] Extraction: ${JSON.stringify({
       source: formData?.source, error: formData?.error,
       payPeriod: formData?.payPeriodGUID, employees: formData?.employeeGUIDs?.length,
-      categories: Object.keys(catMap).length,
-      categoryNames: Object.keys(catMap),
       bearer: formData?.bearerToken ? "yes" : "NO"
     })}`);
 
@@ -381,7 +340,6 @@ export class MeevoClient {
       payPeriodGUID: formData?.payPeriodGUID || "",
       employeeGUIDs: formData?.employeeGUIDs || [],
       categoryGUIDs: formData?.categoryGUIDs || [],
-      categoryMap: catMap,
       payPeriodYear: formData?.payPeriodYear || new Date().getFullYear(),
     };
   }
@@ -407,45 +365,34 @@ export class MeevoClient {
     const targetDir = outputDir || session.downloadDir;
     mkdirSync(targetDir, { recursive: true });
 
-    // DE044 needs payroll period GUID that only Angular can serialize — skip it
-    if (reportCode === "DE044") {
-      throw new Error("MANUAL PULL REQUIRED — DE044 needs Angular form interaction");
-    }
-
-    // All other reports: use direct HTTP POST (faster, no browser needed)
-    // Resolve category filter → specific category GUIDs for this report
+    // Apply category filter using hardcoded GUIDs from config
     const filterName = params.categoryFilter || report.categoryFilter;
     let filteredCategoryGUIDs = params.categoryGUIDs || session.categoryGUIDs;
 
-    if (filterName && filterName !== "none" && CATEGORY_FILTERS[filterName] && Object.keys(session.categoryMap).length > 0) {
-      const patterns = CATEGORY_FILTERS[filterName];
-      filteredCategoryGUIDs = [];
-      for (const [catName, catGuid] of Object.entries(session.categoryMap)) {
-        if (patterns.some((p) => catName.includes(p.toLowerCase()))) {
-          filteredCategoryGUIDs.push(catGuid);
-        }
-      }
-      console.error(`[meevo] Report ${reportCode}: filter=${filterName} → ${filteredCategoryGUIDs.length} categories (${patterns.join(", ")})`);
+    if (filterName && filterName !== "none" && CATEGORY_FILTERS[filterName]) {
+      filteredCategoryGUIDs = CATEGORY_FILTERS[filterName];
+      console.error(`[meevo] Report ${reportCode}: filter=${filterName} → ${filteredCategoryGUIDs.length} category GUIDs`);
     }
 
+    // Direct HTTP POST with filtered category GUIDs
+    // When category filtering is active, clear employeeGUIDs and set allEmployees=true
+    // so Meevo includes cross-clinic staff filtered by category only
+    const usesCategoryFilter = filterName && filterName !== "none";
     const enrichedParams: ReportParamOpts = {
       ...params,
-      employeeGUIDs: params.employeeGUIDs || session.employeeGUIDs,
+      employeeGUIDs: usesCategoryFilter ? [] : (params.employeeGUIDs || session.employeeGUIDs),
       categoryGUIDs: filteredCategoryGUIDs,
+      allEmployees: usesCategoryFilter ? true : params.allEmployees,
       payPeriodGUID: params.payPeriodGUID || session.payPeriodGUID,
       payPeriodYear: params.payPeriodYear || session.payPeriodYear,
-      allEmployees: filterName === "none" ? undefined : params.allEmployees,
     };
 
-    // Build report params
     const reportParams = report.buildParams(enrichedParams);
-    console.error(`[meevo] Report ${reportCode}: payPeriodGUID=${enrichedParams.payPeriodGUID}, employees=${enrichedParams.employeeGUIDs?.length}, categories=${filteredCategoryGUIDs.length}`);
+    console.error(`[meevo] Report ${reportCode}: HTTP POST, categories=${filteredCategoryGUIDs.length}`);
 
-    // Get cookies from browser session for direct HTTP request
     const cookies = await session.page.cookies();
     const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 
-    // Build form data — include bearerToken (required for auth)
     const formBody = new URLSearchParams({
       id: report.id,
       shortCut: report.code,
@@ -455,10 +402,7 @@ export class MeevoClient {
       reportFormat: "XLSX",
     });
 
-    // Direct HTTP POST — no browser DOM needed
     const url = `${MEEVO_REPORT_URL}/${report.code}`;
-    console.error(`[meevo] Downloading ${report.code} from ${url}`);
-
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -475,14 +419,12 @@ export class MeevoClient {
 
     const buffer = Buffer.from(await response.arrayBuffer());
 
-    // Check if response is an error (JSON) instead of XLSX
     const firstBytes = buffer.slice(0, 10).toString("utf-8");
     if (firstBytes.startsWith("{") || firstBytes.startsWith("<")) {
       const errorText = buffer.toString("utf-8").substring(0, 500);
       throw new Error(`Meevo returned error instead of XLSX: ${errorText}`);
     }
 
-    // Build filename: {clinic}_{report}_{variant}.XLSX (matching existing convention)
     const suffix = variant ? `_${variant}` : "";
     const filename = `${clinic}_${report.code}${suffix}.XLSX`;
 
@@ -504,7 +446,8 @@ export class MeevoClient {
     clinic: string,
     reportCode: string,
     targetDir: string,
-    variant?: string
+    variant?: string,
+    categoryFilter?: string
   ): Promise<string> {
     const page = session.page;
 
@@ -535,6 +478,95 @@ export class MeevoClient {
       const formatField = form.querySelector('[name="reportFormat"]') as HTMLInputElement;
       if (formatField) formatField.value = "XLSX";
     });
+
+    // Select employee categories by clicking toggles in the UI
+    if (categoryFilter && categoryFilter !== "none" && CATEGORY_FILTERS[categoryFilter]) {
+      const wantedCategories = CATEGORY_FILTERS[categoryFilter];
+      console.error(`[meevo] ${reportCode}: selecting categories: ${wantedCategories.join(", ")}`);
+
+      await page.evaluate((wanted) => {
+        // First, uncheck "All Employees" if it's checked
+        const allEmpToggle = Array.from(document.querySelectorAll("span, label, div")).find(
+          (el) => el.textContent?.trim() === "All Employees"
+        );
+        if (allEmpToggle) {
+          // Find the closest toggle/checkbox and uncheck it
+          const toggle = allEmpToggle.closest("[ng-click], [ng-change]") || allEmpToggle;
+          (toggle as HTMLElement).click();
+        }
+
+        // Wait a tick for Angular to update
+      }, wantedCategories);
+
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Now uncheck all categories first, then check only the wanted ones
+      await page.evaluate((wanted) => {
+        // Find all category toggle elements
+        // Each category row has text like "Front Desk Associate (11)" with a toggle
+        const allToggles = Array.from(document.querySelectorAll('[ng-repeat*="ategory"], [ng-repeat*="employee"]'));
+
+        // If ng-repeat elements found, use them
+        if (allToggles.length > 0) {
+          for (const el of allToggles) {
+            const text = (el.textContent || "").toLowerCase().trim();
+            const isWanted = wanted.some((w: string) => text.includes(w.toLowerCase()));
+            const toggle = el.querySelector('[ng-click], [type="checkbox"], .toggle, .md-thumb') || el;
+
+            // Determine if currently selected (look for active/checked state)
+            const isActive = el.classList.contains("active") || el.classList.contains("selected")
+              || el.querySelector(".md-checked, .active, :checked") !== null
+              || (el.querySelector('[aria-checked]') as HTMLElement)?.getAttribute("aria-checked") === "true";
+
+            if (isWanted && !isActive) {
+              (toggle as HTMLElement).click();
+            } else if (!isWanted && isActive) {
+              (toggle as HTMLElement).click();
+            }
+          }
+        } else {
+          // Fallback: find category items by text content in the Employee section
+          const employeeSection = Array.from(document.querySelectorAll("h4, h5, label, span")).find(
+            (el) => el.textContent?.trim() === "Employee"
+          )?.closest("div, section, fieldset");
+
+          const container = employeeSection || document.body;
+          const items = Array.from(container.querySelectorAll("div, li, label, span"))
+            .filter((el) => {
+              const t = (el.textContent || "").trim();
+              // Match category names like "Front Desk Associate (11)" or "Esthetician (4)"
+              return /^[A-Z][\w\s.-]+\(\d+\)$/.test(t) || /^[A-Z][\w\s.-]+$/.test(t);
+            });
+
+          for (const item of items) {
+            const text = (item.textContent || "").toLowerCase().trim();
+            const isWanted = wanted.some((w: string) => text.includes(w.toLowerCase()));
+
+            // Click to toggle
+            const clickTarget = item.querySelector("[ng-click], .toggle") || item;
+            const isActive = item.classList.contains("active")
+              || item.closest(".active, .selected, .md-checked") !== null;
+
+            if (isWanted && !isActive) {
+              (clickTarget as HTMLElement).click();
+            } else if (!isWanted && isActive) {
+              (clickTarget as HTMLElement).click();
+            }
+          }
+        }
+      }, wantedCategories);
+
+      await new Promise((r) => setTimeout(r, 2000));
+
+      // Log how many employees are now selected
+      const empCount = await page.evaluate(() => {
+        const countEl = Array.from(document.querySelectorAll("span, div, p")).find(
+          (el) => el.textContent?.includes("Total Employees Selected")
+        );
+        return countEl?.textContent?.trim() || "unknown";
+      });
+      console.error(`[meevo] ${reportCode}: after category selection: ${empCount}`);
+    }
 
     // Install interceptors for BOTH submit paths:
     // 1. submit EVENT (fired by button click) — catches native form submission

@@ -87,12 +87,12 @@ export function registerReportTools(server: McpServer, client: MeevoClient) {
           results.push({ report: "DE040", variant: "FDA", error: e.message });
         }
 
-        // 4. MES01 — FDA only, per week
+        // 4. MES01 — FDA + Managers, per week
         const weeks = getWeekBoundaries(period_start, period_end);
         for (const week of weeks) {
           try {
             const f = await client.downloadReport(clinic, "MES01", {
-              startDate: week.start, endDate: week.end, categoryFilter: "fda_only",
+              startDate: week.start, endDate: week.end, categoryFilter: "fda_managers",
             }, clinicDir, week.label.toLowerCase());
             results.push({ report: "MES01", variant: week.label, file: f });
           } catch (e: any) {
